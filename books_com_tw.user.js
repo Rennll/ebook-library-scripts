@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         博客來電子書匯出
 // @namespace    https://github.com/Rennll/ebook-library-scripts
-// @version      1.0.0
+// @version      1.0.1
 // @description  匯出博客來電子書書單為標準 JSON 格式
 // @author       Re
 // @match        https://viewer-ebook.books.com.tw/*
 // @grant        none
-// @downloadURL  https://github.com/Rennll/ebook-library-scripts/main/books_com_tw.user.js
-// @updateURL    https://github.com/Rennll/ebook-library-scripts/main/books_com_tw.user.js
+// @downloadURL  https://raw.githubusercontent.com/Rennll/ebook-library-scripts/main/books_com_tw.user.js
+// @updateURL    https://raw.githubusercontent.com/Rennll/ebook-library-scripts/main/books_com_tw.user.js
 // ==/UserScript==
 
 (function () {
