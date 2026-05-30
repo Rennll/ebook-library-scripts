@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kobo 電子書匯出
 // @namespace    https://github.com/Rennll/ebook-library-scripts
-// @version      1.0.0
+// @version      1.0.1
 // @description  匯出 Kobo 電子書書單為標準 JSON 格式
 // @author       Re
 // @match        https://www.kobo.com/tw/zh/library/books*
