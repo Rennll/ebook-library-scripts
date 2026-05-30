@@ -93,13 +93,12 @@
     parseDoc(document);
 
     const getTotalPages = () => {
-      const pageItems = document.querySelectorAll('.pagination-bar .page-index-bar li');
-      let max = 1;
-      pageItems.forEach(li => {
-        const n = parseInt(li.textContent.trim(), 10);
-        if (!isNaN(n) && n > max) max = n;
-      });
-      return max;
+      const finalLink = document.querySelector('.page-link.final');
+      if (finalLink) {
+        const n = parseInt(finalLink.textContent.trim(), 10);
+       if (!isNaN(n)) return n;
+      }
+      return 1;
     };
 
     const totalPages = getTotalPages();
