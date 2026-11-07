@@ -1,190 +1,296 @@
 // ==UserScript==
-// @name         Kobo 電子書匯出
+// @name         Kobo 電子書雲端同步
 // @namespace    https://github.com/Rennll/ebook-library-scripts
-// @version      1.2.1
-// @description  匯出 Kobo 電子書書單為標準 JSON 格式（修正命名錯誤與動態分頁）
+// @version      1.3.0
+// @description  完整擷取 Kobo 書櫃並同步至個人 Cloudflare Worker
 // @author       Re
 // @match        https://www.kobo.com/tw/zh/library/books*
-// @grant        none
-// @downloadURL  https://raw.githubusercontent.com/Rennll/ebook-library-scripts/main/kobo.user.js
-// @updateURL    https://raw.githubusercontent.com/Rennll/ebook-library-scripts/main/kobo.user.js
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @run-at       document-idle
+// @downloadURL  https://raw.githubusercontent.com/Rennll/ebook-library/main/kobo.user.js
+// @updateURL    https://raw.githubusercontent.com/Rennll/ebook-library/main/kobo.user.js
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  const btn = document.createElement('button');
-  btn.textContent = '📚 匯出書單';
-  Object.assign(btn.style, {
-    position: 'fixed',
-    bottom: '24px',
-    right: '24px',
-    zIndex: '99999',
-    padding: '10px 18px',
-    background: '#1d6fa4',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '8px',
-    fontSize: '14px',
-    cursor: 'pointer',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-  });
-  document.body.appendChild(btn);
+  const SOURCE = 'kobo';
+  const COOLDOWN_MS = 12 * 60 * 60 * 1000;
+  const KEYS = {
+    worker: 'ebookLibraryWorkerUrl',
+    token: 'ebookLibraryDeviceToken',
+    lastSync: 'ebookLibraryKoboLastSync',
+  };
 
-  btn.addEventListener('click', async () => {
-    btn.textContent = '⏳ 抓取中...';
-    btn.disabled = true;
+  const btn = makeButton('☁️ 同步 Kobo', 24);
+  const settingsBtn = makeButton('⚙️ 同步設定', 82);
+  document.body.append(btn, settingsBtn);
 
+  let running = false;
+
+  function makeButton(label, bottom) {
+    const button = document.createElement('button');
+    button.textContent = label;
+    Object.assign(button.style, {
+      position: 'fixed',
+      bottom: bottom + 'px',
+      right: '24px',
+      zIndex: '99999',
+      padding: '10px 16px',
+      background: bottom === 24 ? '#176b87' : '#444',
+      color: '#fff',
+      border: 'none',
+      borderRadius: '8px',
+      fontSize: '14px',
+      cursor: 'pointer',
+      boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+    });
+    return button;
+  }
+
+  settingsBtn.addEventListener('click', configure);
+  btn.addEventListener('click', () => syncNow({ manual: true }));
+
+  async function gmGet(key, fallback = null) {
     try {
-      await run();
-    } catch (e) {
-      console.error('[Kobo 匯出] 嚴重錯誤:', e);
-      alert('匯出過程中發生嚴重錯誤，請開啟 Console 查看。');
-    } finally {
-      btn.textContent = '📚 匯出書單';
-      btn.disabled = false;
+      if (typeof GM_getValue === 'function') return await GM_getValue(key, fallback);
+    } catch (error) {
+      console.warn('[Kobo 同步] 讀取腳本設定失敗', error);
     }
-  });
+    return fallback;
+  }
 
-  async function run() {
-    const delay = ms => new Promise(r => setTimeout(r, ms));
-    const books = [];
-    const parser = new DOMParser();
-
-    const parseDoc = (doc) => {
-      const items = doc.querySelectorAll('li.item-wrapper.book');
-      if (items.length === 0) return false;
-
-      items.forEach(li => {
-        const trackInfo = (() => {
-          try { return JSON.parse(li.dataset.trackInfo); } catch { return {}; }
-        })();
-
-        const title = trackInfo.title
-          || li.querySelector('h2.title a')?.textContent.trim()
-          || '';
-
-        const authors = [...li.querySelectorAll('.contributor-name')]
-          .map(a => a.textContent.trim())
-          .filter((v, i, arr) => arr.indexOf(v) === i);
-
-        const koboUrl = li.querySelector('h2.title a')?.getAttribute('href') || '';
-        const fullUrl = koboUrl.startsWith('http')
-          ? koboUrl
-          : `https://www.kobo.com${koboUrl}`;
-
-        const dateAdded = li.querySelector('.date-added')?.textContent.trim() || '';
-        const readStatus = trackInfo.readStatus || '';
-        const series = li.querySelector('.series .product-sequence-field a')?.textContent.trim() || '';
-        const genre = li.querySelector('.genre.product-field')?.textContent.trim() || '';
-        const koboId = trackInfo.productId || '';
-
-        books.push({
-          source: 'kobo',
-          title,
-          authors,
-          series: series || null,
-          genre: genre || null,
-          readStatus,
-          dateAdded,
-          koboId,
-          url: fullUrl,
-        });
-      });
-      return true;
-    };
-
-// 透過 next 按鈕的 track-info 精確計算總頁數
-    const parseTotalPages = (doc) => {
-      const nextBtn = doc.querySelector('a.next[data-track-info]');
-      if (!nextBtn) return 1; // 如果找不到下一頁按鈕，代表只有 1 頁
-
-      try {
-        const trackInfo = JSON.parse(nextBtn.dataset.trackInfo);
-        const totalBooks = parseInt(trackInfo.totalBooks, 10);
-        const booksDisplayed = parseInt(trackInfo.booksDisplayed, 10);
-
-        if (!isNaN(totalBooks) && !isNaN(booksDisplayed) && booksDisplayed > 0) {
-          const pages = Math.ceil(totalBooks / booksDisplayed);
-          console.log(`[Kobo 匯出] 偵測到總書籍數: ${totalBooks}, 每頁顯示: ${booksDisplayed}, 計算總頁數: ${pages}`);
-          return pages;
-        }
-      } catch (e) {
-        console.error('[Kobo 匯出] 解析分頁 JSON 失敗，嘗試後備方案', e);
-      }
-
-      // 後備方案：如果 JSON 解析失敗，嘗試從 href 抓取 pageNumber
-      const match = nextBtn.getAttribute('href')?.match(/pageNumber=(\d+)/);
-      return match ? parseInt(match[1], 10) : 1;
-    };
-
-    const fetchPageWithRetry = async (page, retries = 2) => {
-      for (let attempt = 0; attempt <= retries; attempt++) {
-        try {
-          const res = await fetch(`/tw/zh/library/books?pageNumber=${page}`, {
-            credentials: 'include',
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return await res.text();
-        } catch (err) {
-          if (attempt === retries) throw err;
-          console.warn(`[Kobo 匯出] 第 ${page} 頁失敗，2秒後重試...`, err);
-          await delay(2000);
-        }
-      }
-    };
-
-    // --- 開始執行抓取 ---
-    let totalPages = 1; 
-    const failedPages = [];
-
-    for (let page = 1; page <= totalPages; page++) {
-      btn.textContent = `⏳ 第 ${page} / ${totalPages} 頁...`;
-      console.log(`[Kobo 匯出] 抓取第 ${page} 頁...`);
-      
-      try {
-        const html = await fetchPageWithRetry(page);
-        const doc = parser.parseFromString(html, 'text/html');
-        
-        // 解析書籍資料
-        const hasBooks = parseDoc(doc);
-        
-        // 修正處：精確調用已定義的 parseTotalPages 函式
-        if (page === 1) {
-          totalPages = parseTotalPages(doc);
-          console.log(`[Kobo 匯出] 成功從第一頁解析出總頁數：${totalPages} 頁`);
-        }
-
-        if (!hasBooks) {
-          console.warn(`[Kobo 匯出] 第 ${page} 頁未發現書籍資訊。`);
-        }
-      } catch (pageError) {
-        console.error(`[Kobo 匯出] 第 ${page} 頁請求失敗。`, pageError);
-        failedPages.push(page);
-      }
-      
-      await delay(800);
+  async function gmSet(key, value) {
+    if (typeof GM_setValue !== 'function') {
+      throw new Error('目前 Userscript 管理器未提供 GM_setValue，請確認使用 Violentmonkey。');
     }
+    await GM_setValue(key, value);
+  }
 
-    // --- 匯出邏輯 ---
-    if (books.length === 0) {
-      alert('未抓取到任何書籍資料。');
+  async function configure() {
+    const oldWorker = await gmGet(KEYS.worker, '');
+    const workerInput = prompt('請輸入 Cloudflare Worker 網址（https:// 開頭，不含結尾斜線）', oldWorker || '');
+    if (workerInput === null) return;
+    const worker = workerInput.trim().replace(/\/+$/, '');
+    if (!/^https:\/\//i.test(worker)) {
+      alert('Worker 網址必須以 https:// 開頭。');
       return;
     }
 
-    const json = JSON.stringify(books, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const a = document.createElement('a');
-    const downloadUrl = URL.createObjectURL(blob);
-    a.href = downloadUrl;
-    a.download = `kobo_library_${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(downloadUrl);
-
-    console.log(`[Kobo 匯出] 完成！共 ${books.length} 本書。`);
-    if (failedPages.length > 0) {
-      alert(`匯出完成，但第 ${failedPages.join(', ')} 頁抓取失敗。`);
+    const oldToken = await gmGet(KEYS.token, '');
+    const token = prompt('請輸入這台設備的 device token。設定會保存在此瀏覽器的 Userscript 儲存區。', oldToken || '');
+    if (token === null) return;
+    if (!/^ebl_[a-f0-9]{64}$/i.test(token.trim())) {
+      alert('Token 格式不正確。請確認是建立裝置時取得的完整 token。');
+      return;
     }
-    console.table(books.slice(0, 5));
+
+    try {
+      await gmSet(KEYS.worker, worker);
+      await gmSet(KEYS.token, token.trim());
+      alert('設定已儲存。此設定只存在目前瀏覽器的 Userscript 儲存區，不會寫入 GitHub。');
+    } catch (error) {
+      console.error('[Kobo 同步] 儲存設定失敗', error);
+      alert(error.message || '儲存設定失敗。');
+    }
   }
+
+  async function getConfig() {
+    const worker = await gmGet(KEYS.worker, '');
+    const token = await gmGet(KEYS.token, '');
+    if (!worker || !token) {
+      alert('尚未設定 Worker 網址或 device token，請先按「同步設定」。');
+      return null;
+    }
+    return { worker: worker.replace(/\/+$/, ''), token };
+  }
+
+  async function fetchPage(page) {
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const response = await fetch(`/tw/zh/library/books?pageNumber=${page}`, {
+          credentials: 'include',
+          cache: 'no-store',
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.text();
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) await sleep(1500 * (attempt + 1));
+      }
+    }
+    throw lastError || new Error(`第 ${page} 頁讀取失敗`);
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function getPagination(doc) {
+    const next = doc.querySelector('a.next[data-track-info]');
+    if (!next) return { totalPages: 1, totalBooks: null, booksPerPage: null };
+
+    let info;
+    try {
+      info = JSON.parse(next.dataset.trackInfo || '{}');
+    } catch {
+      throw new Error('無法解析 Kobo 分頁資訊，為避免不完整書單覆蓋雲端，已中止同步。');
+    }
+
+    const totalBooks = Number.parseInt(info.totalBooks, 10);
+    const booksPerPage = Number.parseInt(info.booksDisplayed, 10);
+    if (!Number.isFinite(totalBooks) || totalBooks <= 0 ||
+        !Number.isFinite(booksPerPage) || booksPerPage <= 0) {
+      throw new Error('Kobo 分頁資訊缺少有效的總書數或每頁書數，已中止同步。');
+    }
+
+    return {
+      totalPages: Math.ceil(totalBooks / booksPerPage),
+      totalBooks,
+      booksPerPage,
+    };
+  }
+
+  function parseBooks(doc) {
+    const items = [...doc.querySelectorAll('li.item-wrapper.book')];
+    if (!items.length) throw new Error('頁面沒有找到 Kobo 書籍項目，可能是登入逾時或頁面結構改變。');
+
+    return items.map(li => {
+      let trackInfo = {};
+      try {
+        trackInfo = JSON.parse(li.dataset.trackInfo || '{}');
+      } catch {
+        throw new Error('書籍項目的 track-info 格式錯誤，已中止同步。');
+      }
+
+      const title = String(trackInfo.title || li.querySelector('h2.title a')?.textContent || '').trim();
+      const koboId = String(trackInfo.productId || '').trim();
+      if (!title || !koboId) {
+        throw new Error('有書籍缺少標題或 Kobo productId，已中止同步。');
+      }
+
+      const authors = [...li.querySelectorAll('.contributor-name')]
+        .map(node => node.textContent.trim())
+        .filter((value, index, array) => value && array.indexOf(value) === index);
+
+      const href = li.querySelector('h2.title a')?.getAttribute('href') || '';
+      const url = href
+        ? (href.startsWith('http') ? href : new URL(href, 'https://www.kobo.com').href)
+        : '';
+
+      return {
+        source: SOURCE,
+        title,
+        authors,
+        series: li.querySelector('.series .product-sequence-field a')?.textContent.trim() || null,
+        genre: li.querySelector('.genre.product-field')?.textContent.trim() || null,
+        readStatus: trackInfo.readStatus || '',
+        dateAdded: li.querySelector('.date-added')?.textContent.trim() || '',
+        koboId,
+        url,
+      };
+    });
+  }
+
+  async function collectSnapshot() {
+    const parser = new DOMParser();
+    const firstHtml = await fetchPage(1);
+    const firstDoc = parser.parseFromString(firstHtml, 'text/html');
+    const pagination = getPagination(firstDoc);
+    const books = parseBooks(firstDoc);
+
+    for (let page = 2; page <= pagination.totalPages; page++) {
+      btn.textContent = `⏳ 擷取第 ${page}/${pagination.totalPages} 頁`;
+      await sleep(700);
+      const html = await fetchPage(page);
+      const doc = parser.parseFromString(html, 'text/html');
+      books.push(...parseBooks(doc));
+    }
+
+    const ids = new Set();
+    for (const book of books) {
+      if (ids.has(book.koboId)) throw new Error(`發現重複 Kobo ID：${book.koboId}，已中止同步。`);
+      ids.add(book.koboId);
+    }
+
+    if (pagination.totalBooks !== null && books.length !== pagination.totalBooks) {
+      throw new Error(`Kobo 顯示總書數為 ${pagination.totalBooks}，實際擷取 ${books.length} 本；數量不一致，已中止同步。`);
+    }
+
+    return books;
+  }
+
+  async function uploadSnapshot(config, books, allowEmpty) {
+    const payload = {
+      source: SOURCE,
+      complete: true,
+      books,
+    };
+    if (books.length === 0 && allowEmpty) payload.emptyConfirmed = true;
+
+    const response = await fetch(config.worker + '/api/sync', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + config.token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    let result = {};
+    try { result = await response.json(); } catch {}
+    if (!response.ok) {
+      throw new Error(result.error || `Worker 回應錯誤（HTTP ${response.status}）`);
+    }
+    return result;
+  }
+
+  async function syncNow({ manual = false, automatic = false } = {}) {
+    if (running) return;
+    running = true;
+    btn.disabled = true;
+    settingsBtn.disabled = true;
+    const originalLabel = manual ? '☁️ 同步 Kobo' : '☁️ 同步 Kobo';
+
+    try {
+      const config = await getConfig();
+      if (!config) return;
+
+      if (automatic) {
+        const lastSync = Number(await gmGet(KEYS.lastSync, 0));
+        if (Date.now() - lastSync < COOLDOWN_MS) {
+          console.log('[Kobo 同步] 尚未到下次自動同步時間，略過。');
+          return;
+        }
+      }
+
+      btn.textContent = '⏳ 正在檢查 Kobo 書櫃…';
+      const books = await collectSnapshot();
+
+      if (books.length === 0) {
+        if (!manual || !confirm('Kobo 書櫃擷取結果為 0 本。這可能代表登入或頁面異常。\n\n只有在你確定書櫃真的為空時，才按「確定」將雲端 Kobo 書單清空。')) {
+          throw new Error('空書單未經明確確認，不會上傳。');
+        }
+      }
+
+      btn.textContent = `☁️ 上傳 ${books.length} 本…`;
+      const result = await uploadSnapshot(config, books, manual);
+      await gmSet(KEYS.lastSync, Date.now());
+      console.log('[Kobo 同步] 完成', result);
+      alert(`Kobo 同步完成：${result.bookCount} 本書。\n同步時間：${result.syncedAt}`);
+    } catch (error) {
+      console.error('[Kobo 同步] 失敗', error);
+      alert('Kobo 同步未完成，雲端舊資料不會被更新。\n\n原因：' + (error.message || error));
+    } finally {
+      btn.textContent = originalLabel;
+      btn.disabled = false;
+      settingsBtn.disabled = false;
+      running = false;
+    }
+  }
+
+  // 進入書櫃頁時檢查冷卻時間；只有成功上傳後才更新時間戳。
+  syncNow({ automatic: true });
 })();
