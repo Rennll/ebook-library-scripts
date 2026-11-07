@@ -8,8 +8,6 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @run-at       document-idle
-// @downloadURL  https://raw.githubusercontent.com/Rennll/ebook-library/main/kobo.user.js
-// @updateURL    https://raw.githubusercontent.com/Rennll/ebook-library/main/kobo.user.js
 // ==/UserScript==
 
 (function () {
@@ -96,11 +94,11 @@
     }
   }
 
-  async function getConfig() {
+  async function getConfig(silent = false) {
     const worker = await gmGet(KEYS.worker, '');
     const token = await gmGet(KEYS.token, '');
     if (!worker || !token) {
-      alert('尚未設定 Worker 網址或 device token，請先按「同步設定」。');
+      if (!silent) alert('尚未設定 Worker 網址或 device token，請先按「同步設定」。');
       return null;
     }
     return { worker: worker.replace(/\/+$/, ''), token };
@@ -255,7 +253,7 @@
     const originalLabel = manual ? '☁️ 同步 Kobo' : '☁️ 同步 Kobo';
 
     try {
-      const config = await getConfig();
+      const config = await getConfig(automatic);
       if (!config) return;
 
       if (automatic) {
