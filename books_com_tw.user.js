@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         博客來電子書雲端同步
 // @namespace    https://github.com/Rennll/ebook-library-scripts
-// @version      1.1.0
+// @version      1.1.1
 // @description  完整擷取博客來書櫃並同步至個人 Cloudflare Worker
 // @author       Re
 // @match        https://viewer-ebook.books.com.tw/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_xmlhttpRequest
+// @connect      workers.dev
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -140,17 +142,39 @@
     }
     return books;
   }
+  function gmRequest(options) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('目前 Userscript 管理器未提供 GM_xmlhttpRequest，請確認使用 Violentmonkey。'));
+        return;
+      }
+      GM_xmlhttpRequest({
+        ...options,
+        onload: resolve,
+        onerror: () => reject(new Error('無法連線到 Cloudflare Worker，請確認 Worker 網址及 Violentmonkey 的 @connect 權限。')),
+        ontimeout: () => reject(new Error('連線 Cloudflare Worker 逾時。')),
+      });
+    });
+  }
+
   async function uploadSnapshot(config, books, allowEmpty) {
     const payload = { source: SOURCE, complete: true, books };
     if (books.length === 0 && allowEmpty) payload.emptyConfirmed = true;
-    const response = await fetch(config.worker + '/api/sync', {
+    const response = await gmRequest({
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + config.token, 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      url: config.worker + '/api/sync',
+      headers: {
+        'Authorization': 'Bearer ' + config.token,
+        'Content-Type': 'application/json',
+      },
+      data: JSON.stringify(payload),
+      timeout: 60000,
     });
     let result = {};
-    try { result = await response.json(); } catch {}
-    if (!response.ok) throw new Error(result.error || 'Worker 回應錯誤（HTTP ' + response.status + '）');
+    try { result = JSON.parse(response.responseText || '{}'); } catch {}
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(result.error || 'Worker 回應錯誤（HTTP ' + response.status + '）');
+    }
     return result;
   }
   async function syncNow({ manual = false, automatic = false } = {}) {
