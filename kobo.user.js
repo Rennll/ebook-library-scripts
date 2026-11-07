@@ -258,6 +258,10 @@
 
       if (automatic) {
         const lastSync = Number(await gmGet(KEYS.lastSync, 0));
+        if (!lastSync) {
+          console.log('[Kobo 同步] 尚未完成首次手動同步，先略過自動同步。');
+          return;
+        }
         if (Date.now() - lastSync < COOLDOWN_MS) {
           console.log('[Kobo 同步] 尚未到下次自動同步時間，略過。');
           return;
