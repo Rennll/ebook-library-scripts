@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         誠品電子書雲端同步
 // @namespace    https://github.com/Rennll/ebook-library-scripts
-// @version      1.1.0
+// @version      1.1.1
 // @description  完整擷取誠品書櫃並同步至個人 Cloudflare Worker
 // @author       Re
 // @match        https://ebook.eslite.com/bookshelf*
@@ -89,14 +89,14 @@
     if (!articles.length) throw new Error('第 ' + page + ' 頁沒有書籍項目，已中止同步。');
     const books = [];
     for (const article of articles) {
-      const linkEl = article.querySelector('a[href*="/online-reader/"]');
+      const linkEl = article.querySelector('a[href*="/online-reader/"], a[href*="/epubReader/"]');
       if (!linkEl) throw new Error('第 ' + page + ' 頁有書籍缺少閱讀連結，已中止同步。');
       const href = linkEl.getAttribute('href') || '';
       const url = new URL(href, location.origin);
-      const readerMatch = url.pathname.match(/\/online-reader\/(\d+)/);
+      const readerMatch = url.pathname.match(/\/(?:online-reader|epubReader)\/(\d+)/);
       const readerPathId = readerMatch ? readerMatch[1] : '';
       const elementId = url.searchParams.get('elementId') || '';
-      if (!readerPathId || !/^\d+$/.test(readerPathId)) throw new Error('有書籍缺少有效的閱讀頁 ID，已中止同步。');
+      if (!readerPathId || !/^\d+$/.test(readerPathId)) throw new Error('有書籍缺少有效的閱讀路徑 ID，已中止同步。');
       if (!elementId || !/^\d+$/.test(elementId)) throw new Error('有書籍缺少有效的誠品 elementId，已中止同步。');
       if (seenElements.has(elementId)) throw new Error('發現重複誠品 elementId：' + elementId + '，已中止同步。');
       if (seenReaders.has(readerPathId)) throw new Error('發現重複誠品閱讀頁 ID：' + readerPathId + '，已中止同步。');
